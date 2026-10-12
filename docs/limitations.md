@@ -8,9 +8,11 @@ The exact underlying driver or Qt defect has not been established. Reading a cle
 
 ## Cropping
 
-The adapter crops a centered rectangle using `defaultResolution.width` and `.height`, assuming the native Arnold image is centered at **1:1 scale**. This was verified for 1920 × 1080 on a canvas larger than the image.
+The adapter fits the hidden native image and applies a safety zoom-out when the canvas size or `defaultResolution` changes. It detects the outer background along the horizontal and vertical center lines and caches a crop rectangle only when its aspect ratio matches the configured resolution. A 2500 × 1406 render larger than the native canvas was checked in Maya after this change.
 
-Native zoom/pan, cropped regions, high-DPI scaling, render-size overrides and different snapshot dimensions may invalidate that assumption. If the requested dimensions exceed the framebuffer, the implementation keeps the full framebuffer. Large renders can therefore retain the native background or lose the expected framing. The adapter does not read raw Arnold beauty/AOV buffers directly.
+This remains a framebuffer-copy adapter, not direct access to raw Arnold beauty/AOV pixels. Fitting and the safety zoom-out reduce preview pixel resolution; zooming the Qt canvas enlarges that preview rather than fetching additional render pixels. Saved renders still use Arnold's render settings.
+
+Background detection is heuristic. Render content matching the border color along the scan lines, cropped regions, non-square pixels, high-DPI scaling, render-size overrides and snapshots of different dimensions need further validation. If a valid rectangle cannot be found, the full framebuffer is retained. Native positioning tools may invalidate the cached rectangle; resize RenderView to force it to be recalculated.
 
 ## Rendering and responsiveness
 
