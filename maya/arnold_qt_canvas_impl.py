@@ -43,7 +43,17 @@ class ArnoldQtViewerTest(QtWidgets.QGraphicsView):
    if self.first:self.fitInView(self.item,QtCore.Qt.AspectRatioMode.KeepAspectRatio);self.first=False
   except RuntimeError:self.timer.stop()
  def wheelEvent(self,event):
-  factor=1.15 if event.angleDelta().y()>0 else 1/1.15;self.scale(factor,factor);event.accept()
+  delta=event.angleDelta().y()
+  if not delta:event.accept();return
+  factor=1.15 if delta>0 else 1/1.15
+  if not 0.01<self.transform().m11()*factor<100:event.accept();return
+  point=event.position().toPoint();anchor=self.mapToScene(point)
+  self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.NoAnchor)
+  self.scale(factor,factor)
+  after=self.mapFromScene(anchor)
+  h=self.horizontalScrollBar();vertical=self.verticalScrollBar()
+  h.setValue(h.value()+after.x()-point.x());vertical.setValue(vertical.value()+after.y()-point.y())
+  event.accept()
  def keyPressEvent(self,event):
   if event.key()==QtCore.Qt.Key.Key_F:self.fitInView(self.item,QtCore.Qt.AspectRatioMode.KeepAspectRatio)
   else:super().keyPressEvent(event)
@@ -158,19 +168,39 @@ if 'arnold_live_input' in globals():
  except RuntimeError:pass
 arnold_live_input=ArnoldLiveInput(v);v.viewport().installEventFilter(arnold_live_input);v.installEventFilter(arnold_live_input)
 def update_hidden_arnold():
+ if not shiboken6.isValid(v.item):v.item=v.scene().items()[0]
  # Only viewer interactions suspend copying. Camera navigation in Maya stays live.
  if not v.isVisible() or time.monotonic()-v.last_input<0.08:return
  previous=QtGui.QOpenGLContext.currentContext();surface=previous.surface() if previous else None
  start=time.perf_counter()
  try:
+  if time.monotonic()-v.resolution_checked>1:
+   v.native_resolution=(int(cmds.getAttr('defaultResolution.width')),int(cmds.getAttr('defaultResolution.height')));v.resolution_checked=time.monotonic()
+  capture_key=(v.source.width(),v.source.height(),v.native_resolution)
+  if getattr(v,'capture_key',None)!=capture_key:
+   window=v.window()
+   actions=window.findChildren(QtGui.QAction)
+   if not any(a.text()=='Frame All' for a in actions):
+    actions=next(w for w in QtWidgets.QApplication.allWidgets() if w.metaObject().className()=='CRenderViewWindow' and w.isVisible()).findChildren(QtGui.QAction)
+   next(a for a in actions if a.text()=='Frame All').trigger()
+   point=QtCore.QPointF(v.source.width()/2,v.source.height()/2)
+   wheel=QtGui.QWheelEvent(point,point,QtCore.QPoint(),QtCore.QPoint(0,-120),QtCore.Qt.MouseButton.NoButton,QtCore.Qt.KeyboardModifier.NoModifier,QtCore.Qt.ScrollPhase.NoScrollPhase,False)
+   QtCore.QCoreApplication.sendEvent(v.source,wheel)
+   v.capture_key=capture_key;v.capture_rect=None
   v.source.makeCurrent();v.source.paintEvent(QtGui.QPaintEvent(QtCore.QRect(0,0,v.source.width(),v.source.height())))
   image=v.source.grabFramebuffer()
   if not image.isNull():
-   if time.monotonic()-v.resolution_checked>1:
-    v.native_resolution=(int(cmds.getAttr('defaultResolution.width')),int(cmds.getAttr('defaultResolution.height')));v.resolution_checked=time.monotonic()
-   width,height=v.native_resolution
-   if width<=image.width() and height<=image.height():
-    image=image.copy((image.width()-width)//2,(image.height()-height)//2,width,height)
+   if v.capture_rect is None:
+    # The native view is fitted with a safety margin. Locate its flat outer
+    # background once, rather than cutting a render-sized rectangle blindly.
+    bg=image.pixel(0,0);cx=image.width()//2;cy=image.height()//2
+    xs=[x for x in range(image.width()) if image.pixel(x,cy)!=bg]
+    ys=[y for y in range(image.height()) if image.pixel(cx,y)!=bg]
+    if xs and ys:
+     rect=QtCore.QRect(xs[0],ys[0],xs[-1]-xs[0]+1,ys[-1]-ys[0]+1)
+     width,height=v.native_resolution
+     if height and abs(rect.width()/rect.height()-width/height)<0.015:v.capture_rect=rect
+   if v.capture_rect is not None:image=image.copy(v.capture_rect)
    size=(image.width(),image.height())
    v.item.setPixmap(QtGui.QPixmap.fromImage(image));v.scene().setSceneRect(v.item.boundingRect().adjusted(-100000,-100000,100000,100000))
    if v.crop_first or v.crop_size!=size:
