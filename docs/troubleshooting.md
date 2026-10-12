@@ -23,7 +23,7 @@ Check the Script Editor for exceptions. MtoA must be loaded and Arnold RenderVie
 
 ## Border or incorrect crop
 
-The shipped crop assumes a centered native image at 1:1, matching the default render resolution, and a native framebuffer larger than the rendered image. Avoid using native canvas zoom/region tools. See the crop limits before treating every configuration as supported.
+The adapter now fits the hidden native view and detects its outer margins instead of cutting a fixed render-sized rectangle. Press **F** with focus in the Qt canvas to frame the copied image. Resize RenderView to recalculate native framing and the cached crop. Avoid native zoom/region tools while using the adapter. If the mismatch persists, check that the selected render camera and render aspect ratio match the viewport camera and resolution gate, then consult the crop limitations.
 
 ## IPR does not update
 
