@@ -6,6 +6,10 @@ On the tested machine, NVIDIA's native OpenGL path left Maya's viewport black. S
 
 **Status: experimental, verified interactively on one configuration.** This is a community workaround, not native Wayland support or an Autodesk-supported compatibility patch.
 
+## Release v0.1.0
+
+Full-resolution capture, cursor-centered wheel zoom, native mesh picking and press-held highlighting. No render-resolution, sampling or color-quality reduction is used for optimization. See [changes](CHANGELOG.md) and [performance measurements](docs/performance.md).
+
 ## Verified configuration
 
 | Component | Tested version |
@@ -27,8 +31,10 @@ Initial validation: October 11, 2026. Pointer-centered wheel zoom and full-frame
 - Maya's viewport works through Mesa/Zink on the tested system.
 - Arnold's image can be displayed without trails in the Qt canvas.
 - Image panning, zooming and framing were confirmed by the user.
-- Full-frame capture was checked in Maya with a 2500 × 1406 render exceeding the native canvas size. The adapter fits the hidden native view before copying and removes its outer margins.
-- Wheel zoom explicitly preserves the point under the cursor, including after right-button zoom. An offscreen Qt check verified zoom in, zoom out and zero wheel delta with both prior anchor modes.
+- Full-resolution 2500 × 1406 pixels were verified in the Qt buffer even with a smaller visible window.
+- The original native container stays in its QObject hierarchy, hidden at render resolution plus padding; the Qt canvas occupies its place in the visible splitter. This avoids competing native resize operations.
+- Wheel zoom preserves the point under the cursor, including after right-button zoom.
+- Left click selects a mesh through Arnold. Native highlighting is copied while the button is held and disappears on release.
 - IPR updates continue while navigating the camera in Maya's viewport.
 - Redshift's viewer worked in the same Mesa-backed process. Inspection showed a `QGraphicsView`-based image widget, while Arnold used a native `QOpenGLWindow` inside a `QWindowContainer`. This comparison motivated the workaround; it does not prove a defect in a particular driver.
 
@@ -82,12 +88,13 @@ python3 scripts/manage.py install --scripts-dir "/path/to/maya/user/scripts"
 
 Restart Maya using the Mesa launcher, then open **Arnold → Arnold RenderView**. The watcher installs the canvas once the native window exists. It does not load MtoA or start a render by itself.
 
-The watcher interval is 500 ms. Image refresh is requested every 50 ms when the Qt viewer is idle; actual refresh speed depends on rendering, framebuffer copying and Maya's UI thread. Copies pause briefly during gestures **inside the viewer**, not during camera navigation in Maya.
+The watcher interval is 500 ms. Image refresh is requested every 50 ms during activity or while frames change. After 20 identical frames and no recent interaction, it backs off to 250 ms. Actual refresh speed depends on rendering, framebuffer copying and Maya's UI thread. Copies pause briefly during gestures **inside the viewer**, not during camera navigation in Maya.
 
 ### Controls
 
 | Input | Action |
 | --- | --- |
+| Left click | Native mesh selection; highlight while held |
 | Middle-button drag | Pan |
 | Alt + left-button drag | Pan |
 | Right-button horizontal drag, with or without Alt | Zoom around the starting cursor position |
@@ -95,6 +102,10 @@ The watcher interval is 500 ms. Image refresh is requested every 50 ms when the 
 | F, with focus in the canvas | Frame the displayed image |
 
 Original Arnold rendering controls remain in its toolbar. The adapter enables Arnold's **Scene Updates** option for live IPR. It does not change samples, lights, shaders or the rendering device.
+
+## Upgrade from an earlier managed installation
+
+Close Maya and run `python3 scripts/manage.py uninstall --maya-version 2026` from the earlier checkout. Then install from this release with the same scripts directory. The installer refuses duplicate hooks; it does not overwrite an existing manifest silently. If installed modules were edited, review and back them up before removing them manually. For a hand-installed version, retain your backups and update only the adapter modules and its marked hook.
 
 ## Uninstall
 
@@ -121,7 +132,11 @@ flowchart LR
     C --> Q[Visible Qt image canvas]
 ```
 
-Arnold still renders and draws its native framebuffer. The native canvas is hidden; its `paintEvent()` is invoked with its OpenGL context current, and `grabFramebuffer()` supplies a `QImage`. When the native canvas size or configured render resolution changes, the adapter triggers Arnold’s **Frame All**, then zooms its hidden view out one step to keep every edge inside the framebuffer. It detects the flat outer background along the center axes and validates the resulting rectangle against the configured render aspect ratio. The fitted image is copied into a Qt pixmap with independent navigation controls. The previous current OpenGL context is restored after capture.
+Arnold still renders and draws its native framebuffer. The native canvas is hidden; its `paintEvent()` is invoked with its OpenGL context current, and `grabFramebuffer()` supplies a `QImage`. The hidden original native container has a fixed render-sized surface with 64 pixels of padding on each edge, independently of the visible window. When the configured render resolution changes, native framing is initialized at 1:1 in deferred steps. Only the outer padding is cropped; the render pixels are not downsampled. The visible Qt canvas fits or zooms that full-resolution pixmap.
+
+Exact comparison of consecutive framebuffers avoids repeating the padding crop for identical images. Unchanged pixmaps are not uploaded again, and the scene extent is changed only when image dimensions change. Native click coordinates are reconstructed from the Qt scene position and padding.
+
+The previous current OpenGL context is restored after capture.
 
 The shipped runtime follows the implementation validated in Maya, including some retained setup scaffolding from its development. It uses internal Arnold widget class names and a hidden-window rendering path. See [technical limitations](docs/limitations.md).
 
@@ -136,7 +151,13 @@ python3 -m unittest discover -s tests -v
 bash -n scripts/launch-maya.sh
 ```
 
-These tests verify installation and rollback, not graphics compatibility. Graphics validation is currently manual on the configuration above.
+These tests verify installation and rollback. Optional Qt checks validate wheel anchoring, full-resolution crop pixels (including alpha) and identical-frame reuse:
+
+```bash
+QT_QPA_PLATFORM=offscreen /usr/autodesk/maya2026/bin/mayapy tests/qt_canvas_checks.py
+```
+
+Live graphics compatibility, native picking and highlighting were checked manually in Maya on the configuration above. They are not established by the offscreen tests.
 
 ## References and licensing
 
