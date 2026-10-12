@@ -20,14 +20,15 @@ On the tested machine, NVIDIA's native OpenGL path left Maya's viewport black. S
 | XWayland | 24.1.10 |
 | OpenGL renderer | Zink over NVIDIA's proprietary Vulkan driver |
 
-Validation date: October 11, 2026. Other versions and GPUs need testing. See [known limitations](docs/limitations.md) before installing.
+Initial validation: October 11, 2026. Pointer-centered wheel zoom and full-frame capture updated October 12, 2026. Other versions and GPUs need testing. See [known limitations](docs/limitations.md) before installing.
 
 ## What was confirmed
 
 - Maya's viewport works through Mesa/Zink on the tested system.
 - Arnold's image can be displayed without trails in the Qt canvas.
 - Image panning, zooming and framing were confirmed by the user.
-- The extra background copied from Arnold's original canvas was removed for a centered 1920 × 1080 render at native 1:1 scale.
+- Full-frame capture was checked in Maya with a 2500 × 1406 render exceeding the native canvas size. The adapter fits the hidden native view before copying and removes its outer margins.
+- Wheel zoom explicitly preserves the point under the cursor, including after right-button zoom. An offscreen Qt check verified zoom in, zoom out and zero wheel delta with both prior anchor modes.
 - IPR updates continue while navigating the camera in Maya's viewport.
 - Redshift's viewer worked in the same Mesa-backed process. Inspection showed a `QGraphicsView`-based image widget, while Arnold used a native `QOpenGLWindow` inside a `QWindowContainer`. This comparison motivated the workaround; it does not prove a defect in a particular driver.
 
@@ -90,7 +91,7 @@ The watcher interval is 500 ms. Image refresh is requested every 50 ms when the 
 | Middle-button drag | Pan |
 | Alt + left-button drag | Pan |
 | Right-button horizontal drag, with or without Alt | Zoom around the starting cursor position |
-| Mouse wheel | Zoom |
+| Mouse wheel | Zoom around the cursor position |
 | F, with focus in the canvas | Frame the displayed image |
 
 Original Arnold rendering controls remain in its toolbar. The adapter enables Arnold's **Scene Updates** option for live IPR. It does not change samples, lights, shaders or the rendering device.
@@ -120,7 +121,7 @@ flowchart LR
     C --> Q[Visible Qt image canvas]
 ```
 
-Arnold still renders and draws its native framebuffer. The native canvas is hidden; its `paintEvent()` is invoked with its OpenGL context current, and `grabFramebuffer()` supplies a `QImage`. The image is copied into a Qt pixmap with independent navigation controls. The previous current OpenGL context is restored after capture.
+Arnold still renders and draws its native framebuffer. The native canvas is hidden; its `paintEvent()` is invoked with its OpenGL context current, and `grabFramebuffer()` supplies a `QImage`. When the native canvas size or configured render resolution changes, the adapter triggers Arnold’s **Frame All**, then zooms its hidden view out one step to keep every edge inside the framebuffer. It detects the flat outer background along the center axes and validates the resulting rectangle against the configured render aspect ratio. The fitted image is copied into a Qt pixmap with independent navigation controls. The previous current OpenGL context is restored after capture.
 
 The shipped runtime follows the implementation validated in Maya, including some retained setup scaffolding from its development. It uses internal Arnold widget class names and a hidden-window rendering path. See [technical limitations](docs/limitations.md).
 
