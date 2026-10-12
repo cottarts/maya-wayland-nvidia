@@ -1,5 +1,5 @@
-# Qt canvas embedded in Arnold; Maya viewport and plugin binaries are unchanged.
-# Refresh requested every 50 ms; viewer gestures briefly suspend copying.
+# Full-resolution Qt canvas for Arnold. Maya viewport and plugin binaries are unchanged.
+# Active refresh: 50 ms; repeated identical previews back off to 250 ms.
 if 'arnold_qt_viewer_test' in globals():
  try:arnold_qt_viewer_test.source.show()
  except RuntimeError:pass
@@ -13,7 +13,7 @@ class ArnoldQtViewerTest(QtWidgets.QGraphicsView):
   self.source=source
   self.setWindowTitle('Arnold — Qt canvas')
   self.resize(1000,650)
-  self.setToolTip('Left drag: pan • Wheel: zoom • F: frame. Rendering controls remain in Arnold RenderView.')
+  self.setToolTip('Wheel: cursor-centered zoom • F: frame. Rendering controls remain in Arnold RenderView.')
   self.setScene(QtWidgets.QGraphicsScene(self));self.item=self.scene().addPixmap(QtGui.QPixmap())
   self.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
   self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -54,6 +54,28 @@ class ArnoldQtViewerTest(QtWidgets.QGraphicsView):
   h=self.horizontalScrollBar();vertical=self.verticalScrollBar()
   h.setValue(h.value()+after.x()-point.x());vertical.setValue(vertical.value()+after.y()-point.y())
   event.accept()
+ def pickMesh(self,position,modifiers,pressed):
+  point=self.mapToScene(position.toPoint())
+  if pressed and not self.item.boundingRect().contains(point):return
+  width=self.item.pixmap().width();height=self.item.pixmap().height()
+  dpr=self.source.devicePixelRatio()
+  offset=QtCore.QPointF((self.source.width()*dpr-width)/2,(self.source.height()*dpr-height)/2)
+  local=(point+offset)/dpr
+  global_pos=QtCore.QPointF(self.source.mapToGlobal(local.toPoint()))
+  typ=QtCore.QEvent.Type.MouseButtonPress if pressed else QtCore.QEvent.Type.MouseButtonRelease
+  buttons=QtCore.Qt.MouseButton.LeftButton if pressed else QtCore.Qt.MouseButton.NoButton
+  click=QtGui.QMouseEvent(typ,local,global_pos,QtCore.Qt.MouseButton.LeftButton,buttons,modifiers)
+  QtCore.QCoreApplication.sendEvent(self.source,click)
+  self.pick_held=pressed
+  if pressed:QtCore.QTimer.singleShot(20,self.capturePicking)
+  else:
+   self.last_input=0.0
+   QtCore.QTimer.singleShot(20,update_hidden_arnold)
+ def capturePicking(self):
+  if not getattr(self,'pick_held',False):return
+  saved=self.last_input;self.last_input=0.0
+  try:update_hidden_arnold()
+  finally:self.last_input=saved
  def keyPressEvent(self,event):
   if event.key()==QtCore.Qt.Key.Key_F:self.fitInView(self.item,QtCore.Qt.AspectRatioMode.KeepAspectRatio)
   else:super().keyPressEvent(event)
@@ -97,6 +119,11 @@ class ArnoldAltPan(QtCore.QObject):
   if typ==QtCore.QEvent.Type.MouseButtonPress and event.button() in (QtCore.Qt.MouseButton.LeftButton,QtCore.Qt.MouseButton.MiddleButton,QtCore.Qt.MouseButton.RightButton):
    if event.button() in (QtCore.Qt.MouseButton.MiddleButton,QtCore.Qt.MouseButton.RightButton) or event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
     self.view.setFocus();self.view.viewport().setFocus();self.zoom_anchor=self.view.mapToScene(event.position().toPoint());self.last=event.position();self.mode='zoom' if event.button()==QtCore.Qt.MouseButton.RightButton else 'pan';self.view.viewport().setCursor(QtCore.Qt.CursorShape.SizeHorCursor if self.mode=='zoom' else QtCore.Qt.CursorShape.ClosedHandCursor)
+   elif event.button()==QtCore.Qt.MouseButton.LeftButton:
+    self.view.pick_press=event.position()
+    self.view.pickMesh(event.position(),event.modifiers(),True)
+   return True
+  if typ==QtCore.QEvent.Type.MouseMove and self.last is None and getattr(self.view,'pick_press',None) is not None:
    return True
   if typ==QtCore.QEvent.Type.MouseMove and self.last is not None:
    point=event.position();delta=point-self.last;self.last=point
@@ -115,6 +142,10 @@ class ArnoldAltPan(QtCore.QObject):
     h.setValue(h.value()-round(delta.x()));vertical.setValue(vertical.value()-round(delta.y()))
    return True
   if typ==QtCore.QEvent.Type.MouseButtonRelease and event.button() in (QtCore.Qt.MouseButton.LeftButton,QtCore.Qt.MouseButton.MiddleButton,QtCore.Qt.MouseButton.RightButton):
+   if event.button()==QtCore.Qt.MouseButton.LeftButton and self.mode is None:
+    press=getattr(self.view,'pick_press',None);self.view.pick_press=None
+    if press is not None:
+     self.view.pickMesh(event.position(),event.modifiers(),False)
    self.last=None;self.mode=None;self.view.viewport().unsetCursor();return True
   return False
 v.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
@@ -176,33 +207,39 @@ def update_hidden_arnold():
  try:
   if time.monotonic()-v.resolution_checked>1:
    v.native_resolution=(int(cmds.getAttr('defaultResolution.width')),int(cmds.getAttr('defaultResolution.height')));v.resolution_checked=time.monotonic()
-  capture_key=(v.source.width(),v.source.height(),v.native_resolution)
-  if getattr(v,'capture_key',None)!=capture_key:
-   window=v.window()
-   actions=window.findChildren(QtGui.QAction)
-   if not any(a.text()=='Frame All' for a in actions):
-    actions=next(w for w in QtWidgets.QApplication.allWidgets() if w.metaObject().className()=='CRenderViewWindow' and w.isVisible()).findChildren(QtGui.QAction)
-   next(a for a in actions if a.text()=='Frame All').trigger()
-   point=QtCore.QPointF(v.source.width()/2,v.source.height()/2)
-   wheel=QtGui.QWheelEvent(point,point,QtCore.QPoint(),QtCore.QPoint(0,-120),QtCore.Qt.MouseButton.NoButton,QtCore.Qt.KeyboardModifier.NoModifier,QtCore.Qt.ScrollPhase.NoScrollPhase,False)
-   QtCore.QCoreApplication.sendEvent(v.source,wheel)
-   v.capture_key=capture_key;v.capture_rect=None
+  width,height=v.native_resolution
+  if width<=0 or height<=0:return
+  if getattr(v,'fullres_resolution',None)!=(width,height):
+   v.native_container.setFixedSize(width+128,height+128)
+   v.source.resize(width+128,height+128)
+   cmds.arnoldRenderView(option=('Frame All','1'))
+   v.fullres_resolution=(width,height);v.fullres_stage='real'
+   v.timer.setInterval(50);return
+  if getattr(v,'fullres_stage',None)=='real':
+   cmds.arnoldRenderView(option=('Real Size','1'))
+   v.fullres_stage=None;return
   v.source.makeCurrent();v.source.paintEvent(QtGui.QPaintEvent(QtCore.QRect(0,0,v.source.width(),v.source.height())))
   image=v.source.grabFramebuffer()
   if not image.isNull():
-   if v.capture_rect is None:
-    # The native view is fitted with a safety margin. Locate its flat outer
-    # background once, rather than cutting a render-sized rectangle blindly.
-    bg=image.pixel(0,0);cx=image.width()//2;cy=image.height()//2
-    xs=[x for x in range(image.width()) if image.pixel(x,cy)!=bg]
-    ys=[y for y in range(image.height()) if image.pixel(cx,y)!=bg]
-    if xs and ys:
-     rect=QtCore.QRect(xs[0],ys[0],xs[-1]-xs[0]+1,ys[-1]-ys[0]+1)
-     width,height=v.native_resolution
-     if height and abs(rect.width()/rect.height()-width/height)<0.015:v.capture_rect=rect
-   if v.capture_rect is not None:image=image.copy(v.capture_rect)
+   previous_image=getattr(v,'last_preview_image',None)
+   full_unchanged=previous_image is not None and image==getattr(v,'last_full_frame',None)
+   if full_unchanged:
+    image=previous_image
+   else:
+    v.last_full_frame=image
+    width,height=v.native_resolution
+    if width<=image.width() and height<=image.height():
+     image=image.copy((image.width()-width)//2,(image.height()-height)//2,width,height)
+   previous_image=getattr(v,'last_preview_image',None)
+   unchanged=previous_image is not None and image==previous_image
+   v.stable_frames=getattr(v,'stable_frames',0)+1 if unchanged else 0
+   if not unchanged:v.last_preview_image=image
+   recent_input=time.monotonic()-getattr(v,'global_activity',0.0)<1.0
+   v.timer.setInterval(250 if v.stable_frames>=20 and not recent_input else 50)
    size=(image.width(),image.height())
-   v.item.setPixmap(QtGui.QPixmap.fromImage(image));v.scene().setSceneRect(v.item.boundingRect().adjusted(-100000,-100000,100000,100000))
+   if not unchanged:
+    v.item.setPixmap(QtGui.QPixmap.fromImage(image))
+    if v.crop_size!=size:v.scene().setSceneRect(v.item.boundingRect().adjusted(-100000,-100000,100000,100000))
    if v.crop_first or v.crop_size!=size:
     v.fitInView(v.item,QtCore.Qt.AspectRatioMode.KeepAspectRatio);v.crop_first=False;v.crop_size=size
    v.live_updates+=1
@@ -216,4 +253,30 @@ v.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff);v.s
 v.setBackgroundBrush(QtGui.QColor(38,38,38))
 cmds.arnoldRenderView(option=('Scene Updates','1'))
 v.show();v.raise_();v.setFocus()
-v.setToolTip('Live IPR • Middle drag or Alt + left drag: pan • Horizontal right drag: zoom • F: frame')
+v.setToolTip('Live IPR • Left click: pick • Middle or Alt-left drag: pan • Right drag or wheel: zoom • F: frame')
+
+# Keep navigation responsive while backing off repeated identical previews.
+class ArnoldAdaptiveActivity(QtCore.QObject):
+ def eventFilter(self,obj,event):
+  typ=event.type()
+  if typ in (QtCore.QEvent.Type.MouseButtonPress,QtCore.QEvent.Type.Wheel,QtCore.QEvent.Type.KeyPress) or (typ==QtCore.QEvent.Type.MouseMove and event.buttons()!=QtCore.Qt.MouseButton.NoButton):
+   v.global_activity=time.monotonic();v.stable_frames=0
+   if v.timer.interval()!=50:v.timer.setInterval(50)
+  return False
+arnold_adaptive_activity=ArnoldAdaptiveActivity(v)
+QtWidgets.QApplication.instance().installEventFilter(arnold_adaptive_activity)
+
+# Keep the native container in its original QObject hierarchy, hidden and
+# outside the visible splitter layout. Only the Qt image view is visible.
+native_container=v.parentWidget()
+native_splitter=native_container.parentWidget()
+if not isinstance(native_splitter,QtWidgets.QSplitter):
+ raise RuntimeError('Unsupported Arnold layout: expected a QSplitter')
+native_index=native_splitter.indexOf(native_container)
+native_container.removeEventFilter(arnold_canvas_size)
+v.setParent(native_splitter,QtCore.Qt.WindowType.Widget)
+native_splitter.insertWidget(native_index,v)
+native_container.hide()
+v.native_container=native_container
+native_splitter.setStretchFactor(native_splitter.indexOf(v),1)
+v.show();v.raise_()
