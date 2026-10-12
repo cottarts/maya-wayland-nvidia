@@ -23,7 +23,11 @@ Check the Script Editor for exceptions. MtoA must be loaded and Arnold RenderVie
 
 ## Border or incorrect crop
 
-The adapter now fits the hidden native view and detects its outer margins instead of cutting a fixed render-sized rectangle. Press **F** with focus in the Qt canvas to frame the copied image. Resize RenderView to recalculate native framing and the cached crop. Avoid native zoom/region tools while using the adapter. If the mismatch persists, check that the selected render camera and render aspect ratio match the viewport camera and resolution gate, then consult the crop limitations.
+v0.1.0 uses a hidden fixed-size native container and full-resolution Qt pixmap. Press **F** in the Qt canvas to frame all pixels. Check that Arnold's **Test Resolution** is 100% and **3D Manipulation** is disabled. The tested layout uses device pixel ratio 1.
+
+If upgrading from the earlier centered-crop or safety-zoom versions, restart Maya after replacing the runtime; an already attached canvas keeps its loaded Python implementation. Do not reparent Arnold's native OpenGL window or repeatedly resize it while IPR runs. The shipped adapter retains that window's original owner.
+
+If the crop still differs, compare the selected render camera and resolution gate, inspect Script Editor errors, and report the configuration without scene or account data. See [capture limitations](limitations.md).
 
 ## IPR does not update
 
